@@ -1,0 +1,132 @@
+name: Build Android APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Download and prepare offline phone catalogue
+        run: |
+          mkdir -p assets
+          curl --fail --location --retry 4 --retry-all-errors --connect-timeout 30 --max-time 180 https://gettechapi.github.io/TechAPI/v1/smartphones/index.json -o /tmp/phones-source.json
+          python3 - <<'PY'
+          import json, re
+          src = json.load(open('/tmp/phones-source.json', encoding='utf-8'))
+          found = []
+          seen = set()
+          def walk(node, inherited_brand=''):
+              if isinstance(node, list):
+                  for item in node: walk(item, inherited_brand)
+              elif isinstance(node, dict):
+                  brand_value = node.get('brand') or node.get('manufacturer') or node.get('maker') or node.get('vendor') or inherited_brand
+                  if isinstance(brand_value, dict):
+                      brand_value = brand_value.get('name') or brand_value.get('slug') or inherited_brand
+                  brand = str(brand_value or '').strip()
+                  model = node.get('model') or node.get('model_name') or node.get('device_name') or node.get('name') or node.get('title')
+                  slug = node.get('slug') or node.get('id') or node.get('key') or ''
+                  if isinstance(model, (str, int)) and str(model).strip() and (brand or slug):
+                      model = str(model).strip()
+                      key = (brand.lower(), model.lower())
+                      if key not in seen:
+                          seen.add(key)
+                          image = node.get('image_url') or node.get('imageUrl') or node.get('image') or node.get('photo') or node.get('thumbnail') or ''
+                          found.append({'id': str(slug or re.sub(r'[^a-z0-9]+','-',(brand+'-'+model).lower()).strip('-')), 'brand': brand or 'Other', 'model': model, 'image_url': image if isinstance(image,str) else ''})
+                  for k,v in node.items():
+                      if isinstance(v, (dict,list)):
+                          walk(v, brand or inherited_brand)
+          walk(src)
+          if len(found) < 100:
+              raise SystemExit(f'Catalogue validation failed: only {len(found)} phone records found')
+          with open('assets/phones.json','w',encoding='utf-8') as f:
+              json.dump(found,f,ensure_ascii=False,separators=(',',':'))
+          print(f'Prepared {len(found)} offline phone models')
+          PY
+      - name: Generate Android platform wrapper
+        run: flutter create --platforms=android --project-name mobile_cover_manager --org com.example .
+      - name: Set app display name and enable internet photos
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          manifest = Path('android/app/src/main/AndroidManifest.xml')
+          text = manifest.read_text(encoding='utf-8')
+          text = text.replace('android:label="mobile_cover_manager"', 'android:label="Repair X Zone Cover Management"')
+          permission = '<uses-permission android:name="android.permission.INTERNET" />'
+          if 'android.permission.INTERNET' not in text:
+              text = text.replace('<application', permission + chr(10) + '    <application', 1)
+          manifest.write_text(text, encoding='utf-8')
+          print('App label set and INTERNET permission enabled for release builds')
+          PY
+      - name: Prepare Repair X Zone launcher logo
+        run: |
+          python3 -m pip install --quiet pillow
+          python3 - <<'PY'
+          import base64, re
+          from PIL import Image
+          from io import BytesIO
+          source = open('lib/main.dart', encoding='utf-8').read()
+          match = re.search(r"const String _repairLogo = '([^']+)'", source)
+          if not match:
+              raise SystemExit('Repair X Zone logo data not found in app source')
+          original = Image.open(BytesIO(base64.b64decode(match.group(1)))).convert('RGBA')
+          original.thumbnail((460, 460), Image.Resampling.LANCZOS)
+          icon = Image.new('RGBA', (512, 512), (255,255,255,255))
+          icon.alpha_composite(original, ((512-original.width)//2, (512-original.height)//2))
+          icon.save('assets/repair_x_zone_icon.png')
+          print('Prepared Repair X Zone launcher icon')
+          PY
+      - run: flutter pub get
+      - name: Generate Android launcher icons
+        run: dart run flutter_launcher_icons
+      - name: Force Repair X Zone launcher artwork into Android resources
+        run: |
+          python3 - <<'PY'
+          import base64, re
+          from io import BytesIO
+          from pathlib import Path
+          from PIL import Image
+          source = Path('lib/main.dart').read_text(encoding='utf-8')
+          match = re.search(r"const String _repairLogo = '([^']+)'", source)
+          if not match:
+              raise SystemExit('Repair X Zone logo data not found')
+          logo = Image.open(BytesIO(base64.b64decode(match.group(1)))).convert('RGBA')
+          res = Path('android/app/src/main/res')
+          # Legacy launcher icons for Android versions below adaptive-icon support.
+          for density, size in [('mdpi',48),('hdpi',72),('xhdpi',96),('xxhdpi',144),('xxxhdpi',192)]:
+              folder = res / ('mipmap-' + density)
+              folder.mkdir(parents=True, exist_ok=True)
+              icon = Image.new('RGBA',(size,size),(255,255,255,255))
+              mark = logo.copy()
+              mark.thumbnail((int(size*.94),int(size*.94)),Image.Resampling.LANCZOS)
+              icon.alpha_composite(mark,((size-mark.width)//2,(size-mark.height)//2))
+              icon.save(folder/'ic_launcher.png')
+              icon.save(folder/'ic_launcher_round.png')
+          # Adaptive icon foreground stays inside Android's safe zone.
+          foreground = Image.new('RGBA',(432,432),(0,0,0,0))
+          mark = logo.copy()
+          mark.thumbnail((360,360),Image.Resampling.LANCZOS)
+          foreground.alpha_composite(mark,((432-mark.width)//2,(432-mark.height)//2))
+          drawable = res/'drawable'
+          drawable.mkdir(parents=True,exist_ok=True)
+          foreground.save(drawable/'ic_launcher_foreground.png')
+          adaptive = res/'mipmap-anydpi-v26'
+          adaptive.mkdir(parents=True,exist_ok=True)
+          xml = '''<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android"><background android:drawable="@color/ic_launcher_background"/><foreground android:drawable="@drawable/ic_launcher_foreground"/></adaptive-icon>'''
+          (adaptive/'ic_launcher.xml').write_text(xml,encoding='utf-8')
+          (adaptive/'ic_launcher_round.xml').write_text(xml,encoding='utf-8')
+          values =
