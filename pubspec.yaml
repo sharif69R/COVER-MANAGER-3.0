@@ -1,0 +1,29 @@
+name: mobile_cover_manager
+description: Repair X Zone Cover Management
+publish_to: 'none'
+version: 1.6.0+21
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+dependencies:
+  flutter:
+    sdk: flutter
+  sqflite: ^2.4.1
+  path: ^1.9.0
+  path_provider: ^2.1.5
+  http: ^1.2.2
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+  flutter_launcher_icons: ^0.14.4
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/phones.json
+
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: assets/repair_x_zone_icon.png
+  adaptive_icon_background: '#FFFFFF'
+  adaptive_icon_foreground: assets/repair_x_zone_icon.png
