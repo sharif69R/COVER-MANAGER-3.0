@@ -129,4 +129,32 @@ jobs:
           xml = '''<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android"><background android:drawable="@color/ic_launcher_background"/><foreground android:drawable="@drawable/ic_launcher_foreground"/></adaptive-icon>'''
           (adaptive/'ic_launcher.xml').write_text(xml,encoding='utf-8')
           (adaptive/'ic_launcher_round.xml').write_text(xml,encoding='utf-8')
-          values =
+          values = res/'values'
+          values.mkdir(parents=True,exist_ok=True)
+          colors = values/'colors.xml'
+          if colors.exists():
+              existing = colors.read_text(encoding='utf-8')
+              if 'ic_launcher_background' not in existing:
+                  existing = existing.replace('</resources>','  <color name="ic_launcher_background">#FFFFFF</color>\n</resources>')
+                  colors.write_text(existing,encoding='utf-8')
+          else:
+              colors.write_text('<resources><color name="ic_launcher_background">#FFFFFF</color></resources>',encoding='utf-8')
+          manifest = Path('android/app/src/main/AndroidManifest.xml')
+          text = manifest.read_text(encoding='utf-8')
+          text = re.sub(r'android:icon="[^"]+"', 'android:icon="@mipmap/ic_launcher"', text)
+          text = re.sub(r'android:roundIcon="[^"]+"', 'android:roundIcon="@mipmap/ic_launcher_round"', text)
+          if 'android:roundIcon=' not in text:
+              text = text.replace('android:icon="@mipmap/ic_launcher"', 'android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round"')
+          manifest.write_text(text,encoding='utf-8')
+          print('Installed Repair X Zone logo in legacy and adaptive Android launcher resources')
+          PY
+      - name: Build release APK
+        env:
+          BRAVE_API_KEY: ${{ secrets.BRAVE_API_KEY }}
+        run: flutter build apk --release --dart-define=BRAVE_API_KEY="$BRAVE_API_KEY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mobile-cover-manager-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 30
